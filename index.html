@@ -1,0 +1,2279 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>HYPer : Help Your Problem</title>
+
+<!-- ============================================================
+  [1] 아래 FIREBASE_CONFIG를 본인 Firebase 프로젝트 값으로 바꿔 주세요.
+      (Firebase 콘솔 > 프로젝트 설정 > 내 앱 > 웹 앱 > SDK 설정 및 구성)
+============================================================ -->
+<script>
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyBZ-_QgWLyofXhQykDWjB9riue27WvDHWg",
+    authDomain: "hyper-e8cfe.firebaseapp.com",
+    projectId: "hyper-e8cfe",
+    appId: "1:252196520887:web:b9d415f8fa14f5ff989e32"
+  };
+</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const fbAuth = firebase.auth();
+  const fbDb = firebase.firestore();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  html, body, #root { height: 100%; margin: 0; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+// Simple emoji-glyph icon fallback used everywhere except Heart (which needs
+// real fill/stroke color control for the mind-temperature gradient feature).
+const ICON_GLYPHS = {
+  ShieldCheck: '🛡️', MessageSquare: '💬', Send: '📨', RefreshCw: '🔄',
+  Smile: '🙂', ChevronRight: '▶', ChevronLeft: '◀', PhoneCall: '📞',
+  Zap: '⚡', Lock: '🔒', LogOut: '🚪', X: '✕', Settings: '⚙️',
+  Check: '✔️', AlertTriangle: '⚠️', Clover: '🍀', Camera: '📷',
+  Bell: '🔔', Clock: '⏰', BookOpen: '📖', Sparkles: '✨', Award: '🏅',
+  Trash2: '🗑️', Ban: '🚫'
+};
+
+function Icon({ name, className }) {
+  return (
+    <span className={className} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>
+      {ICON_GLYPHS[name] || '•'}
+    </span>
+  );
+}
+
+function Heart({ className, style }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} style={style} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none">
+      <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+    </svg>
+  );
+}
+
+
+const AuthAPI = {
+  mode: 'firebase',
+  async signInWithGoogle() {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.setCustomParameters({ hd: 'ggg.hs.kr', prompt: 'select_account' });
+    const result = await fbAuth.signInWithPopup(provider);
+    return { email: (result.user.email || '').toLowerCase(), verified: !!result.user.emailVerified };
+  },
+  async signOut() { await fbAuth.signOut(); },
+  onAuthChange(cb) {
+    return fbAuth.onAuthStateChanged((user) => cb(user ? (user.email || '').toLowerCase() : null));
+  },
+  currentEmail() { return ((fbAuth.currentUser && fbAuth.currentUser.email) || '').toLowerCase(); },
+  async fetchBlock(email) {
+    const snap = await fbDb.collection('blocks').doc(email).get();
+    return snap.exists ? snap.data() : null;
+  },
+  async saveBlock(email, until) {
+    await fbDb.collection('blocks').doc(email).set({ until: until, blockedAt: Date.now() });
+  },
+  async fetchCounselorInfo(email) {
+    const snap = await fbDb.collection('counselorEmails').doc(email).get();
+    if (!snap.exists) return null;
+    return { counselorId: snap.data().counselorId, role: snap.data().role || 'member' };
+  },
+  async listCounselors() {
+    const snap = await fbDb.collection('counselorEmails').get();
+    return snap.docs.map((d) => ({ email: d.id, counselorId: d.data().counselorId, role: d.data().role || 'member' }));
+  },
+  async saveCounselor(email, counselorId, role) {
+    await fbDb.collection('counselorEmails').doc(email).set({ counselorId: counselorId, role: role });
+  },
+  async removeCounselor(email) {
+    await fbDb.collection('counselorEmails').doc(email).delete();
+  }
+};
+
+const DB = {
+  watchCounselors(onData, onError) {
+    return fbDb.collection('counselors').onSnapshot(
+      (snap) => onData(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      onError
+    );
+  },
+  watchChats(field, value, onData, onError) {
+    return fbDb.collection('chats').where(field, '==', value).onSnapshot(
+      (snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const changes = snap.docChanges().map((c) => ({ type: c.type, chat: { id: c.doc.id, ...c.doc.data() } }));
+        onData(list, changes);
+      },
+      onError
+    );
+  },
+  watchBlock(email, onData, onError) {
+    return fbDb.collection('blocks').doc(email).onSnapshot(
+      (snap) => onData(snap.exists ? snap.data() : null),
+      onError
+    );
+  },
+  watchRatings(counselorId, onData, onError) {
+    return fbDb.collection('ratings').where('counselorId', '==', counselorId).onSnapshot(
+      (snap) => onData(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      onError
+    );
+  },
+  async seedCounselors(initial) {
+    const snap = await fbDb.collection('counselors').get();
+    if (!snap.empty) return;
+    const batch = fbDb.batch();
+    initial.forEach((c) => {
+      const { pin, ...rest } = c;
+      batch.set(fbDb.collection('counselors').doc(c.id), rest);
+    });
+    await batch.commit();
+  },
+  async saveProfile(id, patch) {
+    await fbDb.collection('counselors').doc(id).set(patch, { merge: true });
+  },
+  async resetProfile(id) {
+    await fbDb.collection('counselors').doc(id).update({ heartTemp: 0 });
+    const snap = await fbDb.collection('ratings').where('counselorId', '==', id).get();
+    if (snap.empty) return;
+    const batch = fbDb.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  },
+  async giveTemp(counselorId, degrees, clientNick, gratitudeText) {
+    await fbDb.collection('counselors').doc(counselorId).update({
+      heartTemp: firebase.firestore.FieldValue.increment(degrees)
+    });
+    if (gratitudeText) {
+      await fbDb.collection('ratings').add({
+        counselorId: counselorId,
+        clientNick: clientNick,
+        text: gratitudeText,
+        temp: degrees,
+        time: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: Date.now()
+      });
+    }
+  },
+  async deleteChat(chatId) {
+    await fbDb.collection('chats').doc(chatId).delete();
+  },
+  async createChat(chat) {
+    const ref = await fbDb.collection('chats').add({ ...chat, lastMessageAt: Date.now(), createdAt: Date.now() });
+    return ref.id;
+  },
+  async appendMessage(chatId, message) {
+    await fbDb.collection('chats').doc(chatId).update({
+      messages: firebase.firestore.FieldValue.arrayUnion(message),
+      lastMessageAt: Date.now()
+    });
+  }
+};
+
+const BAD_WORDS_PATTERNS = [
+  /시발|씨발|씨바|시바|개새끼|존나|지랄|병신|꺼져|닥쳐|미친년|미친놈|성관계|섹스|보지|자지|야동|조건만남|몸캠|패드립|느금마|느패|자살/i,
+  /ㅅ[ㅂㅁ]|ㅆ[ㅂㅁ]|ㅈ같|ㅂㅅ|ㄲㅈ|ㅗ|凸|ㅅㅐㄲㅣ|ㄱㅐㅅㅐ/i
+];
+
+const EMOJI_OPTIONS = [
+  '🐶', '🐱', '🦊', '🐻', '🐰', '🐥', '🐹', '🦦', '🐨', '🐼', 
+  '🦁', '🐯', '🐮', '🐷', '🐸', '🐵', '🐔', '🐧', '🐦', '🐤', 
+  '🐺', '🐗', '🐴', '🦄', '🐝', '🐛', '🦋', '🐌', '🐞', '🐜',
+  '🍀', '🌸', '☕', '☁️', '🎈', '🌙', '⭐', '🥑', '🍓', '🍑',
+  '🍉', '🥨', '🍪', '🪐', '🐳', '🍿', '🍡', '🍭', '🍧', '🍵',
+  '⚡', '🌟', '💎', '🎨', '🎧', '👾', '🤖', '👻', '🎃', '🦖'
+];
+
+// Pastel background colors grouped by each emoji's dominant real-world color family,
+// used to tint the selection box when a counselor picks that emoji.
+const EMOJI_PASTEL_COLORS = {
+  '🐶': '#F1E0CB', '🐱': '#FDE5CE', '🦊': '#FBDCC0', '🐻': '#EAD9C4',
+  '🐰': '#F1F1F1', '🐥': '#FFF3C4', '🐹': '#F5E1C8', '🦦': '#E9D7C3',
+  '🐨': '#E5E7EB', '🐼': '#EDEDED', '🦁': '#FCEBB6', '🐯': '#FBDDB8',
+  '🐮': '#F2F2F2', '🐷': '#FBDCE6', '🐸': '#DCF2E3', '🐵': '#E9D3B8',
+  '🐔': '#FBDADA', '🐧': '#E7E9EC', '🐦': '#DCEEFB', '🐤': '#FFF3C4',
+  '🐺': '#E3E5E8', '🐗': '#E6D2BE', '🐴': '#E9D2BC', '🦄': '#F5E0F0',
+  '🐝': '#FFF0BE', '🐛': '#E1F0DA', '🦋': '#E7DFF7', '🐌': '#E9DBC9',
+  '🐞': '#FBD7D7', '🐜': '#E6E6E6', '🍀': '#DCF2E3', '🌸': '#FCE4EC',
+  '☕': '#E9D7C3', '☁️': '#EFF3F6', '🎈': '#FBDADA', '🌙': '#FFF3C4',
+  '⭐': '#FFF3C4', '🥑': '#DCF2E3', '🍓': '#FBD7D7', '🍑': '#FDE1D9',
+  '🍉': '#FBD7D7', '🥨': '#EAD9C4', '🍪': '#EAD9C4', '🪐': '#F3DFC7',
+  '🐳': '#DCEEFB', '🍿': '#FFF3C4', '🍡': '#FCE4EC', '🍭': '#FCE4EC',
+  '🍧': '#DCEEFB', '🍵': '#DCF2E3', '⚡': '#FFF3C4', '🌟': '#FFF3C4',
+  '💎': '#DCEEFB', '🎨': '#F0E6FA', '🎧': '#E5E7EB', '👾': '#EAE0F8',
+  '🤖': '#E5E7EB', '👻': '#EFF3F6', '🎃': '#FBDCC0', '🦖': '#DCF2E3'
+};
+
+const getEmojiPastelColor = (emoji) => EMOJI_PASTEL_COLORS[emoji] || '#E8F5E9';
+
+// Shared "pastel + dot texture" style for every counselor-profile box.
+const getAvatarBoxStyle = (icon, dot = 8) => ({
+  backgroundColor: getEmojiPastelColor(icon),
+  backgroundImage: 'radial-gradient(rgba(255,255,255,0.7) 1.5px, transparent 1.5px)',
+  backgroundSize: `${dot}px ${dot}px`
+});
+
+// School Gmail format: 6 digits @ ggg.hs.kr
+const SCHOOL_EMAIL_REGEX = /^\d{6}@ggg\.hs\.kr$/;
+// Counselors / admins (e.g. teachers) only need a school-domain account.
+const SCHOOL_DOMAIN_REGEX = /^[^@\s]+@ggg\.hs\.kr$/;
+
+const BLOCK_DURATIONS = [
+  { id: '1d', label: '1일', days: 1 },
+  { id: '3d', label: '3일', days: 3 },
+  { id: '5d', label: '5일', days: 5 },
+  { id: '1w', label: '1주일', days: 7 },
+  { id: '2w', label: '2주일', days: 14 },
+  { id: '1m', label: '1개월', days: 30 },
+  { id: 'perm', label: '영구', days: null }
+];
+
+// Interpolates a "cool -> warm" color as a counselor's accumulated heart temperature rises.
+const getHeartColor = (temp) => {
+  const safeTemp = Number.isFinite(temp) ? temp : 0;
+  const ratio = Math.min(Math.max(safeTemp, 0), 20) / 20;
+  const start = { r: 30, g: 100, b: 220 };  // vivid, readable cool blue
+  const end = { r: 173, g: 20, b: 87 };     // deep warm pink/red (#AD1457)
+  const r = Math.round(start.r + (end.r - start.r) * ratio);
+  const g = Math.round(start.g + (end.g - start.g) * ratio);
+  const b = Math.round(start.b + (end.b - start.b) * ratio);
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
+const FORTUNE_MESSAGES = [
+  "오늘 당신에게 뜻밖의 뜻깊고 다정한 순간이 찾아올 거예요. 🍀",
+  "지친 마음은 잠시 내려놓아도 돼요. 당신은 오늘 이미 충분히 잘해냈어요. ✨",
+  "주저함이 있다면 마음이 이끄는 대로 해봐요. 당신의 선택을 응원해요. 🌸",
+  "스스로에게 따뜻한 차 한 잔 사주는 여유를 선물해보세요. ☕",
+  "곧 기분 좋은 소식이나 예쁜 웃음이 당신을 찾아올 예정이에요. 💕",
+  "남들과 속도가 달라도 괜찮아요. 당신만의 어여쁜 계절이 오고 있으니까요. ☁️",
+  "당신의 따뜻한 시선이 오늘 누군가의 마음을 크게 밝혀줄 거예요. ⭐",
+  "오늘 밤엔 모든 근심을 잊고 포근한 꿈을 꾸길 바랄게요. 🌙",
+  "지금 네가 겪고 있는 고민은 더 멋진 사람이 되기 위한 눈부신 성장통일 뿐이야. 🌟",
+  "누가 뭐래도 네가 걸어가는 그 길은 너만의 아름다운 꽃길이야. 🌷",
+  "오늘 하루도 숨 가쁘게 달려오느라 수고 많았어. 이젠 너 자신을 꼬옥 안아주렴. 🫂",
+  "비 온 뒤에 땅이 굳어지듯, 지금의 아픔은 머지않아 큰 단단함이 되어줄 거야. 🌱",
+  "너는 그 자체로 너무나 소중하고 반짝이는 존재야. 자신을 믿어봐! 💎",
+  "마음의 배터리가 닳았다면 오늘은 그냥 푹 쉬어도 아무도 뭐라고 안 해. 🔋",
+  "네 곁엔 생각보다 너를 진심으로 아끼고 응원하는 사람들이 많다는 걸 잊지마. 🎈",
+  "답이 안 보이는 문제 같아도, 차근차근 풀다 보면 반드시 실마리가 보일 거야. 🧶",
+  "바쁜 일상 속, 잠시 고개를 들어 예쁜 하늘을 한번 보며 쉬어가는 건 어떨까요? ☁️",
+  "푸른 하늘과 살랑이는 바람처럼, 당신의 마음에도 곧 시원한 평온이 찾아올 거예요. 🍃",
+  "잠깐 눈을 감고 깊게 숨을 쉬어봐요. 세상은 당신을 언제나 응원하고 있어요. ✨",
+  "오늘 저녁엔 가벼운 산책과 함께 머릿속 복잡한 생각들을 공기 중에 훌훌 털어버려요. 🎈",
+  "당신은 누군가에게 언제나 소중하고 빛나는 존재라는 걸 절대 잊지 마세요. 🌟"
+];
+
+const INITIAL_COUNSELORS = [
+  {
+    id: 'c1',
+    codeName: '쿼카',
+    pin: '1234',
+    styleBadge: '이성적 솔루션',
+    oneLiner: '답답한 고민, 차근차근 같이 정리해줄게!',
+    icon: '🐹',
+    customAvatar: null,
+    status: 'online',
+    statusText: '보통 5분 내 답변',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '오늘 어떤 일 때문에 제일 답답했어?',
+      '우리 당장 할 수 있는 것부터 차근차근 해결해보자!',
+      '너무 복잡하게 생각하지 마, 내가 같이 도와줄게!'
+    ]
+  },
+  {
+    id: 'c2',
+    codeName: '고양이',
+    pin: '1234',
+    styleBadge: '공감 & 경청',
+    oneLiner: '말없이 가만히 들어줄게. 토닥토닥 🌸',
+    icon: '🐱',
+    customAvatar: null,
+    status: 'online',
+    statusText: '지금 바로 대화 가능 💬',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '속상했겠다... 혼자 참느라 진짜 고생 많았어 🥺',
+      '하고 싶은 말 편하게 다 써줘. 다 들어줄게!',
+      '네 잘못 아니야, 마음 푹 놓고 얘기해'
+    ]
+  },
+  {
+    id: 'c3',
+    codeName: '수달',
+    pin: '1234',
+    styleBadge: '솔직한 팩폭',
+    oneLiner: '돌려말하기 없음! 사이다 조언 필요하면 드루와',
+    icon: '🦦',
+    customAvatar: null,
+    status: 'busy',
+    statusText: '시험 기간 📚 (답변 조금 느림)',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '그건 진짜 상대방이 선 넘은 거야. 너 잘못 제로!',
+      '더 이상 혼자 눈치 보지 말고 확실하게 말해보자',
+      '답답할 땐 소리 한 번 지르고 솔직해져도 돼!'
+    ]
+  },
+  {
+    id: 'c4',
+    codeName: '곰돌이',
+    pin: '1234',
+    styleBadge: '든든한 대나무숲',
+    oneLiner: '편하게 여기다 다 털어놓고 가!',
+    icon: '🐻',
+    customAvatar: null,
+    status: 'online',
+    statusText: '상시 대기 중 🐻',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '아무한테도 말 못 한 얘기, 여기선 다 괜찮아',
+      '천천히 말해도 돼. 기다리고 있을게',
+      '네 편 되어줄 테니까 걱정 말고 털어놔!'
+    ]
+  },
+  {
+    id: 'c5',
+    codeName: '강아지',
+    pin: '1234',
+    styleBadge: '친근한 수다',
+    oneLiner: '친구한테 말하듯 편하게 수다 떨자 ☕',
+    icon: '🐶',
+    customAvatar: null,
+    status: 'offline',
+    statusText: '수업 중 💤 (이따 답변 가능)',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '오늘 하루도 진짜 고생 많았어! 토닥토닥',
+      '그냥 소소한 일상 넋두리도 완전 환영이야 ㅎㅎ',
+      '맛있는 거 먹으면서 편하게 대화하자!'
+    ]
+  },
+  {
+    id: 'c6',
+    codeName: '토끼',
+    pin: '1234',
+    styleBadge: '현실적 계획',
+    oneLiner: '머릿속 복잡할 때 한 단계씩 가이드해줄게',
+    icon: '🐰',
+    customAvatar: null,
+    status: 'online',
+    statusText: '실시간 답변 가능 ✨',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '지금 제일 걱정되는 게 뭔지 하나만 뽑아볼까?',
+      '하나씩 정돈하다 보면 별거 아닐 거야!',
+      '오늘 당장 해볼 수 있는 작은 일부터 시작하자'
+    ]
+  },
+  {
+    id: 'c7',
+    codeName: '사막여우',
+    pin: '1234',
+    styleBadge: '마음 위로',
+    oneLiner: '남들이 뭐라든 넌 충분히 잘하고 있어 ☁️',
+    icon: '🦊',
+    customAvatar: null,
+    status: 'busy',
+    statusText: '수행평가 집중 기간 📝',
+    heartTemp: 0.0,
+    archiveMessages: [],
+    quickResponses: [
+      '남들 속도에 안 맞춰도 돼. 지금도 너무 잘하고 있어',
+      '오늘은 아무 생각 말고 푹 쉬어줬으면 좋겠어',
+      '너 생각보다 훨씬 단단하고 멋진 사람이야!'
+    ]
+  }
+];
+
+const CATEGORIES = [
+  { id: 'academic', label: '학업 / 진로', icon: '📚' },
+  { id: 'relations', label: '인간관계 / 친구', icon: '🤝' },
+  { id: 'romance', label: '연애 / 짝사랑', icon: '💖' },
+  { id: 'mental', label: '마음건강 / 우울', icon: '🌿' },
+  { id: 'free', label: '소소한 수다', icon: '☕' }
+];
+
+const ANONYMOUS_ADJECTIVES = ['민트빛', '분홍빛', '포근한', '상큼한', '차분한', '달콤한', '산뜻한', '말랑한', '초록빛', '새하얀', '몽환적'];
+const ANONYMOUS_NOUNS = ['클로버', '딸기', '구름', '바람', '캔디', '새싹', '솜사탕', '마카롱', '별빛', '모래성', '푸딩'];
+
+const generateAnonNickname = () => {
+  const adj = ANONYMOUS_ADJECTIVES[Math.floor(Math.random() * ANONYMOUS_ADJECTIVES.length)];
+  const noun = ANONYMOUS_NOUNS[Math.floor(Math.random() * ANONYMOUS_NOUNS.length)];
+  const num = Math.floor(100 + Math.random() * 900);
+  return `${adj} ${noun} #${num}`;
+};
+
+function App() {
+  const [counselors, setCounselors] = useState(() => {
+    if (AuthAPI.mode !== 'demo') return INITIAL_COUNSELORS;
+    const saved = localStorage.getItem('hyper_counselors_v10');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
+    }
+    return INITIAL_COUNSELORS;
+  });
+
+  const [chats, setChats] = useState(() => {
+    if (AuthAPI.mode !== 'demo') return [];
+    const saved = localStorage.getItem('hyper_chats_v11');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
+    }
+    return []; // no chat exists until a client actually sends a first message
+  });
+
+  // Blocks are keyed by school e-mail: [{ email, until (ms timestamp | null = permanent), blockedAt }]
+  const [blockedClients, setBlockedClients] = useState(() => {
+    const saved = localStorage.getItem('hyper_blocked_emails_v11');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) { /* fallback */ }
+    }
+    return [];
+  });
+
+  const [loggedInCounselorId, setLoggedInCounselorId] = useState(() => {
+    return localStorage.getItem('hyper_logged_in_counselor_v10') || null;
+  });
+
+  useEffect(() => {
+    if (AuthAPI.mode !== 'demo') return;
+    localStorage.setItem('hyper_counselors_v10', JSON.stringify(counselors));
+  }, [counselors]);
+
+  useEffect(() => {
+    if (AuthAPI.mode !== 'demo') return;
+    localStorage.setItem('hyper_chats_v11', JSON.stringify(chats));
+  }, [chats]);
+
+  useEffect(() => {
+    localStorage.setItem('hyper_blocked_emails_v11', JSON.stringify(blockedClients));
+  }, [blockedClients]);
+
+  useEffect(() => {
+    if (loggedInCounselorId) {
+      localStorage.setItem('hyper_logged_in_counselor_v10', loggedInCounselorId);
+    } else {
+      localStorage.removeItem('hyper_logged_in_counselor_v10');
+    }
+  }, [loggedInCounselorId]);
+
+  const [activeRole, setActiveRole] = useState('client');
+
+  // Secret Logo Click Triple Click Handler state for Counselor Login
+  const [logoClickCount, setLogoClickCount] = useState(0);
+  const logoClickTimerRef = useRef(null);
+
+  const handleLogoTripleClick = () => {
+    setLogoClickCount(prev => {
+      const nextCount = prev + 1;
+      if (logoClickTimerRef.current) clearTimeout(logoClickTimerRef.current);
+      logoClickTimerRef.current = setTimeout(() => {
+        setLogoClickCount(0);
+      }, 600);
+
+      if (nextCount >= 3) {
+        setActiveRole('counselor');
+        return 0;
+      }
+      return nextCount;
+    });
+  };
+
+  const [showBadWordWarning, setShowBadWordWarning] = useState(false);
+  const [showFortuneModal, setShowFortuneModal] = useState(false);
+  const [currentFortune, setCurrentFortune] = useState(() => {
+    const randIdx = Math.floor(Math.random() * FORTUNE_MESSAGES.length);
+    return FORTUNE_MESSAGES[randIdx];
+  });
+
+  const [clientStep, setClientStep] = useState(1); // 1: list, 2: category/nick, 3: chat
+
+  // Client entry gate: 'gate' (enter school e-mail) -> 'loading' -> 'ready'
+  const [clientAuthStage, setClientAuthStage] = useState('gate');
+  const [clientEmail, setClientEmail] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [blockDurationId, setBlockDurationId] = useState('1d');
+  const [nowTs, setNowTs] = useState(Date.now());
+  const [authBusy, setAuthBusy] = useState(false);
+  const [counselorAuthError, setCounselorAuthError] = useState('');
+  const [authEmail, setAuthEmail] = useState(null);
+  const [serverArchive, setServerArchive] = useState([]);
+  const [counselorRole, setCounselorRole] = useState(() => localStorage.getItem('hyper_counselor_role_v11') || 'member');
+  const [adminList, setAdminList] = useState([]);
+  const [adminEmailInput, setAdminEmailInput] = useState('');
+  const [adminProfileId, setAdminProfileId] = useState('c1');
+  const [adminRoleInput, setAdminRoleInput] = useState('member');
+  const [adminMsg, setAdminMsg] = useState('');
+  const [resetConfirmId, setResetConfirmId] = useState(null);
+
+  useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Expired blocks are released automatically.
+  useEffect(() => {
+    setBlockedClients(prev => {
+      const next = prev.filter(b => b.until === null || b.until > nowTs);
+      return next.length === prev.length ? prev : next;
+    });
+  }, [nowTs]);
+  const [selectedCounselorId, setSelectedCounselorId] = useState('c1');
+  const [clientCategory, setClientCategory] = useState(CATEGORIES[1]);
+  const [clientNick, setClientNick] = useState('');
+  const [clientMessageInput, setClientMessageInput] = useState('');
+  
+  const [showNoticeModal, setShowNoticeModal] = useState(false);
+  const [pendingCounselorId, setPendingCounselorId] = useState(null);
+  const [noticeCountdown, setNoticeCountdown] = useState(5);
+  const noticeTimerRef = useRef(null);
+
+  // Flow: Temperature Modal first -> Finish & Deletion Confirmation Modal second
+  const [showTemperatureModal, setShowTemperatureModal] = useState(false);
+  const [selectedRatingTemp, setSelectedRatingTemp] = useState(3.0);
+  const [gratitudeInput, setGratitudeInput] = useState('');
+  const [temperatureGiven, setTemperatureGiven] = useState(false);
+
+  const [showClientFinishConfirmModal, setShowClientFinishConfirmModal] = useState(false);
+
+  const [showCounselorDeleteModal, setShowCounselorDeleteModal] = useState(false);
+  const [pendingDeleteChatId, setPendingDeleteChatId] = useState(null);
+
+  const [showCounselorBlockModal, setShowCounselorBlockModal] = useState(false);
+  const [pendingBlockChatObj, setPendingBlockChatObj] = useState(null);
+
+  const [selectedProfileForLogin, setSelectedProfileForLogin] = useState(null);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(false);
+  const [counselorMessageInput, setCounselorMessageInput] = useState('');
+  const [counselorMobileTab, setCounselorMobileTab] = useState('list');
+  const [counselorViewMode, setCounselorViewMode] = useState('chat');
+
+  const [newClientAlertMessage, setNewClientAlertMessage] = useState(null);
+  const [newCounselorReplyAlert, setNewCounselorReplyAlert] = useState(null);
+
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editStyleBadge, setEditStyleBadge] = useState('');
+  const [editOneLiner, setEditOneLiner] = useState('');
+  const [editIcon, setEditIcon] = useState('🐶');
+  const [editAvatar, setEditAvatar] = useState(null);
+  const [editPin, setEditPin] = useState('');
+  const [editStatus, setEditStatus] = useState('online');
+  const [editStatusText, setEditStatusText] = useState('');
+
+  const [activeChatId, setActiveChatId] = useState(null);
+  const chatBottomRef = useRef(null);
+
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chats, activeChatId, clientStep]);
+
+  useEffect(() => {
+    setClientNick(generateAnonNickname());
+  }, []);
+
+  const currentSelectedCounselor = counselors.find(c => c.id === selectedCounselorId) || counselors[0];
+  const loggedInCounselorBase = counselors.find(c => c.id === loggedInCounselorId);
+  // On the real site the thank-you letters come from the server.
+  const loggedInCounselor = loggedInCounselorBase && AuthAPI.mode === 'firebase'
+    ? { ...loggedInCounselorBase, archiveMessages: serverArchive }
+    : loggedInCounselorBase;
+
+  const myCounselorChats = chats.filter(chat => chat.counselorId === loggedInCounselorId);
+
+  // Roster management (hand-over to the next cohort): admins only on the real site.
+  const canManageRoster = !!loggedInCounselor && (AuthAPI.mode === 'demo' || counselorRole === 'admin');
+
+  const loadAdminList = async () => {
+    try {
+      const list = await AuthAPI.listCounselors();
+      setAdminList(list.sort((a, b) => a.counselorId.localeCompare(b.counselorId)));
+    } catch (err) {
+      setAdminMsg('명단을 불러오지 못했어요. 관리자 계정으로 로그인했는지 확인해 주세요.');
+    }
+  };
+
+  useEffect(() => {
+    if (canManageRoster && counselorViewMode === 'admin') loadAdminList();
+  }, [canManageRoster, counselorViewMode]);
+
+  // ---------- Real site: live data from the server ----------
+  const counselorsRef = useRef(counselors);
+  counselorsRef.current = counselors;
+
+  useEffect(() => AuthAPI.onAuthChange(setAuthEmail), []);
+
+  // Counselor profiles (name, status, heart temperature) for everyone signed in
+  useEffect(() => {
+    if (AuthAPI.mode !== 'firebase' || !authEmail) return undefined;
+    return DB.watchCounselors((list) => {
+      if (list.length) {
+        setCounselors(
+          list
+            .map((c) => ({ archiveMessages: [], customAvatar: null, heartTemp: 0, quickResponses: [], ...c }))
+            .sort((a, b) => a.id.localeCompare(b.id))
+        );
+      }
+    }, () => {});
+  }, [authEmail]);
+
+  // Client: my chat rooms + reply notifications
+  useEffect(() => {
+    if (AuthAPI.mode !== 'firebase' || !authEmail || activeRole !== 'client' || clientAuthStage !== 'ready' || authEmail !== clientEmail) return undefined;
+    let first = true;
+    return DB.watchChats('clientEmail', clientEmail, (list, changes) => {
+      setChats([...list].sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0)));
+      if (!first) {
+        changes.forEach(({ type, chat }) => {
+          const last = chat.messages && chat.messages[chat.messages.length - 1];
+          if (type !== 'removed' && last && last.sender === 'counselor') {
+            const who = counselorsRef.current.find((c) => c.id === chat.counselorId);
+            setNewCounselorReplyAlert({ counselorName: who ? who.codeName : '상담원', text: last.text, time: last.time });
+          }
+        });
+      }
+      first = false;
+    }, () => {});
+  }, [authEmail, activeRole, clientAuthStage, clientEmail]);
+
+  // Client: if a counselor blocks this account, the block screen appears right away
+  useEffect(() => {
+    if (AuthAPI.mode !== 'firebase' || !authEmail || activeRole !== 'client' || clientAuthStage !== 'ready' || authEmail !== clientEmail) return undefined;
+    return DB.watchBlock(clientEmail, (b) => {
+      if (!b) return;
+      setBlockedClients(prev => [
+        ...prev.filter(x => x.email !== clientEmail),
+        { email: clientEmail, until: b.until == null ? null : b.until, blockedAt: b.blockedAt || Date.now() }
+      ]);
+      setNowTs(Date.now());
+    }, () => {});
+  }, [authEmail, activeRole, clientAuthStage, clientEmail]);
+
+  // Counselor: rooms assigned to me + new-message notifications
+  useEffect(() => {
+    if (AuthAPI.mode !== 'firebase' || !authEmail || activeRole !== 'counselor' || !loggedInCounselorId) return undefined;
+    let first = true;
+    return DB.watchChats('counselorId', loggedInCounselorId, (list, changes) => {
+      setChats([...list].sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0)));
+      if (!first) {
+        changes.forEach(({ type, chat }) => {
+          const last = chat.messages && chat.messages[chat.messages.length - 1];
+          if (type !== 'removed' && last && last.sender === 'client') {
+            const me = counselorsRef.current.find((c) => c.id === loggedInCounselorId);
+            setNewClientAlertMessage({
+              counselorId: loggedInCounselorId,
+              counselorName: me ? me.codeName : '',
+              clientNick: chat.clientNick,
+              text: last.text,
+              time: last.time
+            });
+          }
+        });
+      }
+      first = false;
+    }, () => {});
+  }, [authEmail, activeRole, loggedInCounselorId]);
+
+  // Counselor: thank-you letters
+  useEffect(() => {
+    if (AuthAPI.mode !== 'firebase' || !authEmail || activeRole !== 'counselor' || !loggedInCounselorId) return undefined;
+    return DB.watchRatings(loggedInCounselorId, (list) => {
+      setServerArchive([...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    }, () => {});
+  }, [authEmail, activeRole, loggedInCounselorId]);
+
+  // Admin: create the 7 default profiles on the server if they do not exist yet
+  useEffect(() => {
+    if (AuthAPI.mode === 'firebase' && authEmail && counselorRole === 'admin' && loggedInCounselorId) {
+      DB.seedCounselors(INITIAL_COUNSELORS).catch(() => {});
+    }
+  }, [authEmail, counselorRole, loggedInCounselorId]);
+
+  const handleAdminAdd = async () => {
+    const email = adminEmailInput.trim().toLowerCase();
+    if (!SCHOOL_DOMAIN_REGEX.test(email)) {
+      setAdminMsg('학교 이메일(@ggg.hs.kr)만 등록할 수 있어요.');
+      return;
+    }
+    try {
+      await AuthAPI.saveCounselor(email, adminProfileId, adminRoleInput);
+      setAdminEmailInput('');
+      setAdminMsg('등록했어요.');
+      loadAdminList();
+    } catch (err) {
+      setAdminMsg('등록에 실패했어요. 관리자 계정으로 로그인했는지 확인해 주세요.');
+    }
+  };
+
+  const handleAdminRemove = async (email) => {
+    if (email === AuthAPI.currentEmail()) {
+      setAdminMsg('지금 로그인한 내 계정은 삭제할 수 없어요.');
+      return;
+    }
+    try {
+      await AuthAPI.removeCounselor(email);
+      setAdminMsg('삭제했어요.');
+      loadAdminList();
+    } catch (err) {
+      setAdminMsg('삭제에 실패했어요.');
+    }
+  };
+
+  const handleResetProfile = (id) => {
+    if (resetConfirmId !== id) {
+      setResetConfirmId(id);
+      return;
+    }
+    if (AuthAPI.mode === 'firebase') {
+      DB.resetProfile(id).catch(() => setAdminMsg('초기화에 실패했어요.'));
+    } else {
+      setCounselors(prev => prev.map(x => (x.id === id ? { ...x, heartTemp: 0, archiveMessages: [] } : x)));
+    }
+    setResetConfirmId(null);
+    setAdminMsg('프로필의 마음 온도와 감사 편지를 초기화했어요.');
+  };
+
+  useEffect(() => {
+    if (loggedInCounselorId) {
+      if (myCounselorChats.length > 0) {
+        if (!myCounselorChats.some(c => c.id === activeChatId)) {
+          setActiveChatId(myCounselorChats[0].id);
+        }
+      } else {
+        setActiveChatId(null);
+      }
+    }
+  }, [loggedInCounselorId, chats]);
+
+  const currentActiveChat = chats.find(c => c.id === activeChatId) || myCounselorChats[0] || null;
+
+  const containsProfanity = (text) => {
+    const cleanText = text.replace(/\s+/g, '');
+    return BAD_WORDS_PATTERNS.some(pattern => pattern.test(cleanText));
+  };
+
+  const getActiveBlock = (email) => {
+    if (!email) return null;
+    const found = blockedClients.find(b => b.email === email);
+    if (!found) return null;
+    return found.until === null || found.until > Date.now() ? found : null;
+  };
+  const activeBlock = getActiveBlock(clientEmail);
+
+  const enterAfterLogin = () => {
+    setClientAuthStage('loading');
+    setTimeout(() => {
+      setClientStep(1);
+      setClientAuthStage('ready');
+      setShowFortuneModal(true);
+    }, 2200);
+  };
+
+  // Real site: Google sign-in restricted to school accounts, block list read from the server.
+  const handleGoogleLogin = async () => {
+    if (authBusy) return;
+    setEmailError('');
+    setAuthBusy(true);
+    try {
+      const { email, verified } = await AuthAPI.signInWithGoogle();
+      if (!verified || !SCHOOL_EMAIL_REGEX.test(email)) {
+        await AuthAPI.signOut();
+        setEmailError('학교 계정(000000@ggg.hs.kr)으로만 로그인할 수 있어요.');
+        return;
+      }
+      setClientEmail(email);
+      const serverBlock = await AuthAPI.fetchBlock(email);
+      if (serverBlock) {
+        const until = serverBlock.until == null ? null : serverBlock.until;
+        setBlockedClients(prev => [
+          ...prev.filter(b => b.email !== email),
+          { email, until, blockedAt: serverBlock.blockedAt || Date.now() }
+        ]);
+        setNowTs(Date.now());
+        if (until === null || until > Date.now()) {
+          setClientAuthStage('ready');
+          return;
+        }
+      }
+      enterAfterLogin();
+    } catch (err) {
+      if (err && err.message === 'DEMO_MODE') {
+        setEmailError('미리보기에서는 구글 로그인이 실행되지 않아요. 실제 사이트에서 동작해요.');
+      } else if (err && (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request')) {
+        setEmailError('');
+      } else {
+        setEmailError('로그인에 실패했어요. 잠시 후 다시 시도해 주세요.');
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  // Real site: counselors sign in with a registered school Google account (no PIN).
+  const handleCounselorGoogleLogin = async () => {
+    if (authBusy) return;
+    setCounselorAuthError('');
+    setAuthBusy(true);
+    try {
+      const { email, verified } = await AuthAPI.signInWithGoogle();
+      const info = verified && SCHOOL_DOMAIN_REGEX.test(email) ? await AuthAPI.fetchCounselorInfo(email) : null;
+      if (info && counselors.some(c => c.id === info.counselorId)) {
+        localStorage.setItem('hyper_counselor_role_v11', info.role || 'member');
+        setCounselorRole(info.role || 'member');
+        setLoggedInCounselorId(info.counselorId);
+      } else {
+        await AuthAPI.signOut();
+        setCounselorAuthError('부원으로 등록된 계정이 아니에요.');
+      }
+    } catch (err) {
+      if (err && err.message === 'DEMO_MODE') {
+        setCounselorAuthError('미리보기에서는 구글 로그인이 실행되지 않아요.');
+      } else if (!(err && (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request'))) {
+        setCounselorAuthError('로그인에 실패했어요. 잠시 후 다시 시도해 주세요.');
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleEmailSubmit = () => {
+    const email = emailInput.trim().toLowerCase();
+    if (!SCHOOL_EMAIL_REGEX.test(email)) {
+      setEmailError('학교 지메일 형식(000000@ggg.hs.kr)으로 입력해 주세요.');
+      return;
+    }
+    setEmailError('');
+    setClientEmail(email);
+
+    // Blocked accounts skip straight to the notice screen.
+    if (getActiveBlock(email)) {
+      setClientAuthStage('ready');
+      return;
+    }
+
+    setClientAuthStage('loading');
+    setTimeout(() => {
+      setClientStep(1);
+      setClientAuthStage('ready');
+      setShowFortuneModal(true);
+    }, 2200);
+  };
+
+  const handleSelectCounselorClick = (counselorId) => {
+    setPendingCounselorId(counselorId);
+    setShowNoticeModal(true);
+    setNoticeCountdown(5);
+
+    if (noticeTimerRef.current) clearInterval(noticeTimerRef.current);
+    noticeTimerRef.current = setInterval(() => {
+      setNoticeCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(noticeTimerRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const handleConfirmNoticeAndProceed = () => {
+    if (noticeCountdown > 0) return;
+    if (noticeTimerRef.current) clearInterval(noticeTimerRef.current);
+    setShowNoticeModal(false);
+    if (pendingCounselorId) {
+      setSelectedCounselorId(pendingCounselorId);
+      setClientStep(2);
+    }
+  };
+
+  const handleStartChat = () => {
+    const existingChat = chats.find(
+      c => c.clientEmail === clientEmail && c.counselorId === selectedCounselorId
+    );
+
+    if (existingChat) {
+      setClientNick(existingChat.clientNick);
+      setActiveChatId(existingChat.id);
+    } else {
+      setClientNick(clientNick.trim() || generateAnonNickname());
+      setActiveChatId(null);
+    }
+
+    setClientStep(3);
+  };
+
+  const handleMemberPinSubmit = (e) => {
+    e.preventDefault();
+    if (!selectedProfileForLogin) return;
+
+    const targetCounselor = counselors.find(c => c.id === selectedProfileForLogin.id);
+    
+    if (targetCounselor && pinInput === targetCounselor.pin) {
+      setLoggedInCounselorId(targetCounselor.id);
+      setSelectedProfileForLogin(null);
+      setPinInput('');
+      setPinError(false);
+    } else {
+      setPinError(true);
+    }
+  };
+
+  const handleLogoutCounselor = () => {
+    AuthAPI.signOut();
+    localStorage.removeItem('hyper_counselor_role_v11');
+    setCounselorRole('member');
+    setCounselorViewMode('chat');
+    setLoggedInCounselorId(null);
+    localStorage.removeItem('hyper_logged_in_counselor_v10');
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const img = new Image();
+        img.onload = () => {
+          const size = 160;
+          const canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+          const min = Math.min(img.width, img.height);
+          canvas.getContext('2d').drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, size, size);
+          setEditAvatar(canvas.toDataURL('image/jpeg', 0.8));
+        };
+        img.onerror = () => setEditAvatar(reader.result);
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSaveSettings = (e) => {
+    e.preventDefault();
+    if (!loggedInCounselorId) return;
+
+    if (AuthAPI.mode === 'firebase') {
+      DB.saveProfile(loggedInCounselorId, {
+        codeName: editName.trim() || loggedInCounselor.codeName,
+        styleBadge: editStyleBadge.trim() || loggedInCounselor.styleBadge,
+        oneLiner: editOneLiner.trim() || loggedInCounselor.oneLiner,
+        icon: editIcon,
+        customAvatar: editAvatar || null,
+        status: editStatus,
+        statusText: editStatusText.trim() || loggedInCounselor.statusText || ''
+      })
+        .then(() => setShowSettingsModal(false))
+        .catch(() => window.alert('프로필을 저장하지 못했어요.'));
+      return;
+    }
+
+    setCounselors(prev => prev.map(c => {
+      if (c.id === loggedInCounselorId) {
+        return {
+          ...c,
+          codeName: editName.trim() || c.codeName,
+          styleBadge: editStyleBadge.trim() || c.styleBadge,
+          oneLiner: editOneLiner.trim() || c.oneLiner,
+          icon: editIcon,
+          customAvatar: editAvatar,
+          pin: editPin.trim() || c.pin,
+          status: editStatus,
+          statusText: editStatusText.trim() || c.statusText
+        };
+      }
+      return c;
+    }));
+
+    setShowSettingsModal(false);
+  };
+
+  const openSettingsModal = () => {
+    if (!loggedInCounselor) return;
+    setEditName(loggedInCounselor.codeName);
+    setEditStyleBadge(loggedInCounselor.styleBadge);
+    setEditOneLiner(loggedInCounselor.oneLiner);
+    setEditIcon(loggedInCounselor.icon);
+    setEditAvatar(loggedInCounselor.customAvatar);
+    setEditPin(loggedInCounselor.pin);
+    setEditStatus(loggedInCounselor.status || 'online');
+    setEditStatusText(loggedInCounselor.statusText || '상시 대기 중');
+    setShowSettingsModal(true);
+  };
+
+  const handleClientClickFinish = () => {
+    setSelectedRatingTemp(3.0);
+    setGratitudeInput('');
+    setTemperatureGiven(false);
+    setShowTemperatureModal(true);
+  };
+
+  const handleGiveHeartTempAndNext = () => {
+    setTemperatureGiven(true);
+    const addedDegrees = parseFloat(selectedRatingTemp);
+    const trimmedGratitude = gratitudeInput.trim();
+
+    if (AuthAPI.mode === 'firebase') {
+      DB.giveTemp(selectedCounselorId, addedDegrees, clientNick, trimmedGratitude)
+        .catch(() => window.alert('마음 온도를 전하지 못했어요. 잠시 후 다시 시도해 주세요.'));
+    } else
+    setCounselors(prev => prev.map(c => {
+      if (c.id === selectedCounselorId) {
+        const newArchive = trimmedGratitude ? [
+          {
+            id: Date.now(),
+            clientNick: clientNick,
+            text: trimmedGratitude,
+            temp: addedDegrees,
+            time: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          },
+          ...(c.archiveMessages || [])
+        ] : (c.archiveMessages || []);
+
+        return { 
+          ...c, 
+          heartTemp: parseFloat((c.heartTemp + addedDegrees).toFixed(1)),
+          archiveMessages: newArchive
+        };
+      }
+      return c;
+    }));
+
+    setTimeout(() => {
+      setShowTemperatureModal(false);
+      setShowClientFinishConfirmModal(true);
+    }, 500);
+  };
+
+  const handleClientConfirmFinishAndDelete = () => {
+    if (activeChatId) {
+      if (AuthAPI.mode === 'firebase') {
+        DB.deleteChat(activeChatId).catch(() => {});
+      } else {
+        setChats(prev => prev.filter(c => c.id !== activeChatId));
+      }
+    }
+    setShowClientFinishConfirmModal(false);
+    setClientStep(1);
+  };
+
+  const handleClientConfirmFinishKeep = () => {
+    setShowClientFinishConfirmModal(false);
+    setClientStep(1);
+  };
+
+  const handleDeleteCounselorChat = (chatId, e) => {
+    if (e) e.stopPropagation();
+    setPendingDeleteChatId(chatId);
+    setShowCounselorDeleteModal(true);
+  };
+
+  const confirmDeleteCounselorChat = () => {
+    if (pendingDeleteChatId) {
+      if (AuthAPI.mode === 'firebase') {
+        DB.deleteChat(pendingDeleteChatId).catch(() => window.alert('삭제하지 못했어요.'));
+      } else {
+        setChats(prev => prev.filter(c => c.id !== pendingDeleteChatId));
+      }
+      if (activeChatId === pendingDeleteChatId) {
+        setActiveChatId(null);
+      }
+    }
+    setShowCounselorDeleteModal(false);
+    setPendingDeleteChatId(null);
+  };
+
+  const handleBlockClientFromChat = (chatObj) => {
+    setPendingBlockChatObj(chatObj);
+    setBlockDurationId('1d');
+    setShowCounselorBlockModal(true);
+  };
+
+  const confirmBlockClient = () => {
+    if (pendingBlockChatObj) {
+      const blockedEmail = pendingBlockChatObj.clientEmail;
+      const option = BLOCK_DURATIONS.find(d => d.id === blockDurationId) || BLOCK_DURATIONS[0];
+      // Only this exact school e-mail account is blocked, for the chosen period.
+      if (blockedEmail) {
+        const until = option.days === null ? null : Date.now() + option.days * 24 * 60 * 60 * 1000;
+        setBlockedClients(prev => [
+          ...prev.filter(b => b.email !== blockedEmail),
+          { email: blockedEmail, until, blockedAt: Date.now() }
+        ]);
+        setNowTs(Date.now());
+        AuthAPI.saveBlock(blockedEmail, until).catch(() => {
+          window.alert('서버에 차단을 저장하지 못했어요. 부원 계정으로 로그인되어 있는지 확인해 주세요.');
+        });
+      }
+      if (AuthAPI.mode === 'firebase') {
+        DB.deleteChat(pendingBlockChatObj.id).catch(() => {});
+      } else {
+        setChats(prev => prev.filter(c => c.id !== pendingBlockChatObj.id));
+      }
+      if (activeChatId === pendingBlockChatObj.id) {
+        setActiveChatId(null);
+      }
+    }
+    setShowCounselorBlockModal(false);
+    setPendingBlockChatObj(null);
+  };
+
+  const sendClientMessageServer = async () => {
+    const text = clientMessageInput;
+    const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setClientMessageInput('');
+    try {
+      const stillExists = activeChatId && chats.some((c) => c.id === activeChatId);
+      if (!stillExists) {
+        const id = await DB.createChat({
+          clientEmail,
+          clientNick,
+          counselorId: selectedCounselorId,
+          category: clientCategory,
+          messages: [
+            { id: Date.now(), sender: 'system', text: `[${currentSelectedCounselor.codeName}] 님과 1:1 익명 대화방이 연결되었습니다 🌸`, time: currentTime },
+            { id: Date.now() + 1, sender: 'client', text, time: currentTime }
+          ]
+        });
+        setActiveChatId(id);
+      } else {
+        await DB.appendMessage(activeChatId, { id: Date.now(), sender: 'client', text, time: currentTime });
+      }
+    } catch (err) {
+      setClientMessageInput(text);
+      window.alert('메시지를 보내지 못했어요. 로그인이 만료되었거나 이용이 제한된 계정일 수 있어요.');
+    }
+  };
+
+  const handleSendClientMessage = () => {
+    if (!clientMessageInput.trim() || activeBlock) return;
+
+    if (containsProfanity(clientMessageInput)) {
+      setShowBadWordWarning(true);
+      return;
+    }
+
+    if (AuthAPI.mode === 'firebase') {
+      sendClientMessageServer();
+      return;
+    }
+
+    const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    let targetChatId = activeChatId;
+
+    if (!targetChatId) {
+      const newChatId = `chat-${Date.now()}`;
+      const newChat = {
+        id: newChatId,
+        clientNick: clientNick,
+        clientEmail: clientEmail,
+        counselorId: selectedCounselorId,
+        category: clientCategory,
+        createdAt: '방금 전',
+        messages: [
+          {
+            id: Date.now(),
+            sender: 'system',
+            text: `[${currentSelectedCounselor.codeName}] 님과 1:1 비밀 익명 대화방이 연결되었습니다 🌸`,
+            time: currentTime
+          },
+          {
+            id: Date.now() + 1,
+            sender: 'client',
+            text: clientMessageInput,
+            time: currentTime
+          }
+        ]
+      };
+      setChats(prev => [newChat, ...prev]);
+      setActiveChatId(newChatId);
+      targetChatId = newChatId;
+    } else {
+      setChats(prev => prev.map(chat => {
+        if (chat.id === targetChatId) {
+          return {
+            ...chat,
+            messages: [
+              ...chat.messages,
+              { id: Date.now(), sender: 'client', text: clientMessageInput, time: currentTime }
+            ]
+          };
+        }
+        return chat;
+      }));
+    }
+
+    const targetCounselorObj = counselors.find(c => c.id === selectedCounselorId);
+    if (targetCounselorObj) {
+      setNewClientAlertMessage({
+        counselorId: targetCounselorObj.id,
+        counselorName: targetCounselorObj.codeName,
+        clientNick: clientNick,
+        text: clientMessageInput,
+        time: currentTime
+      });
+    }
+
+    setClientMessageInput('');
+  };
+
+  const handleSendCounselorMessage = () => {
+    if (!counselorMessageInput.trim() || !activeChatId) return;
+
+    if (containsProfanity(counselorMessageInput)) {
+      setShowBadWordWarning(true);
+      return;
+    }
+
+    const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const activeChatObj = chats.find(c => c.id === activeChatId);
+
+    if (AuthAPI.mode === 'firebase') {
+      DB.appendMessage(activeChatId, { id: Date.now(), sender: 'counselor', text: counselorMessageInput, time: currentTime })
+        .catch(() => window.alert('메시지를 보내지 못했어요. 다시 시도해 주세요.'));
+      setCounselorMessageInput('');
+      return;
+    }
+
+    setChats(prev => prev.map(chat => {
+      if (chat.id === activeChatId) {
+        return {
+          ...chat,
+          messages: [
+            ...chat.messages,
+            { id: Date.now(), sender: 'counselor', text: counselorMessageInput, time: currentTime }
+          ]
+        };
+      }
+      return chat;
+    }));
+
+    if (activeChatObj && loggedInCounselor) {
+      setNewCounselorReplyAlert({
+        counselorName: loggedInCounselor.codeName,
+        text: counselorMessageInput,
+        time: currentTime
+      });
+    }
+
+    setCounselorMessageInput('');
+  };
+
+  const handleFillQuickInput = (presetText, targetRole) => {
+    if (targetRole === 'client') {
+      setClientMessageInput(presetText);
+    } else {
+      setCounselorMessageInput(presetText);
+    }
+  };
+
+  const triggerNewFortune = () => {
+    const randIdx = Math.floor(Math.random() * FORTUNE_MESSAGES.length);
+    setCurrentFortune(FORTUNE_MESSAGES[randIdx]);
+    setShowFortuneModal(true);
+  };
+
+  const getStatusBadgeInfo = (status) => {
+    switch (status) {
+      case 'online':
+        return { 
+          label: '대화 가능', 
+          color: 'bg-emerald-500 text-white border-emerald-600', 
+          dotColor: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' 
+        };
+      case 'busy':
+        return { 
+          label: '바쁨', 
+          color: 'bg-amber-500 text-white border-amber-600', 
+          dotColor: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]' 
+        };
+      case 'offline':
+        return { 
+          label: '부재중', 
+          color: 'bg-rose-500 text-white border-rose-600', 
+          dotColor: 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]' 
+        };
+      default:
+        return { 
+          label: '대기중', 
+          color: 'bg-emerald-500 text-white', 
+          dotColor: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' 
+        };
+    }
+  };
+
+  const clientActiveChat = chats.find(c => c.id === activeChatId);
+
+  // Client chats list for header/sidebar dropdown or drawer
+  const clientMyChats = chats.filter(c => c.clientEmail === clientEmail);
+
+  return (
+    <div 
+      className="min-h-screen text-slate-800 flex flex-col font-sans selection:bg-[#B7E4C7]/40 relative break-keep text-xs sm:text-sm"
+      style={{
+        backgroundColor: '#F3FAF6',
+        backgroundImage: 'radial-gradient(#2E7D32 1.2px, transparent 1.2px), radial-gradient(#D81B60 1.2px, #F3FAF6 1.2px)',
+        backgroundSize: '24px 24px',
+        backgroundPosition: '0 0, 12px 12px',
+        opacity: 0.98
+      }}
+    >
+      
+      {/* Header */}
+      <header className="bg-white/95 backdrop-blur-md border-b border-[#C8E6C9] sticky top-0 z-40 shadow-sm shrink-0">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex items-center justify-between gap-2">
+          <div className="flex items-center space-x-2 shrink-0">
+            <div 
+              onClick={handleLogoTripleClick}
+              className="cursor-pointer select-none group"
+              title="비밀 제스처 (연속 3회 클릭 시 부원 로그인)"
+            >
+              <div className="flex items-center gap-1.5">
+                <h1 className="font-black text-base sm:text-lg tracking-tight text-[#2E7D32] group-hover:text-[#1B4332] transition">
+                  HYPer
+                </h1>
+                <span className="text-[10px] sm:text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-[#FCE4EC] text-[#D81B60] border border-[#F8BBD0] whitespace-nowrap">
+                  Help Your Problem
+                </span>
+              </div>
+              <p className="text-[10px] text-[#2E7D32] font-bold">익명 마음 상담</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={triggerNewFortune}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-2xl bg-[#FCE4EC] hover:bg-[#F8BBD0] text-[#D81B60] text-xs font-bold border border-[#F8BBD0] transition shadow-sm whitespace-nowrap"
+            >
+              <Icon name="Clover" className="w-3.5 h-3.5 text-[#2E7D32]" />
+              행운 메시지 🍀
+            </button>
+
+            {/* Role switch toggle removed from header to hide counselor access completely. Access is now strictly via triple clicking the HYPer logo above. */}
+            <div className="bg-[#E8F5E9] p-1 rounded-2xl border border-[#C8E6C9] flex items-center text-xs font-semibold">
+              <button
+                onClick={() => setActiveRole('client')}
+                className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 text-xs whitespace-nowrap ${
+                  activeRole === 'client' || activeRole === 'counselor'
+                    ? 'bg-white text-[#2E7D32] shadow-sm font-bold'
+                    : 'text-[#2E7D32]/80 hover:text-[#2E7D32]'
+                }`}
+              >
+                <Icon name="Smile" className="w-3.5 h-3.5 text-[#2E7D32]" />
+                {activeRole === 'counselor' ? '부원 모드 (접속중)' : '내담자'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4 flex flex-col justify-start">
+
+        {/* CLIENT: SCHOOL E-MAIL GATE */}
+        {activeRole === 'client' && clientAuthStage === 'gate' && (
+          <div className="flex-1 flex items-center justify-center py-6">
+            <div className="w-full max-w-sm bg-white rounded-3xl p-6 border border-[#C8E6C9] shadow-xl space-y-4 text-center">
+              <div className="font-black text-4xl tracking-tight text-[#2E7D32]">HYPer</div>
+              <div className="space-y-1">
+                <h2 className="font-black text-base sm:text-lg text-[#1B4332]">HYPer 상담소 입장</h2>
+                <p className="text-[11px] sm:text-xs text-slate-600 font-medium leading-relaxed">
+                  <strong className="text-[#1B4332] font-extrabold bg-[#E8F5E9] px-1 rounded">학교 구글 계정</strong>으로 로그인해야 입장할 수 있어요.
+                  상담원에게는 익명 닉네임만 보여요.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <button
+                  onClick={handleGoogleLogin}
+                  disabled={authBusy}
+                  className="w-full py-3 bg-white hover:bg-[#F3FAF6] border border-slate-300 text-slate-700 font-bold rounded-2xl shadow-sm text-sm flex items-center justify-center gap-2 transition disabled:opacity-60"
+                >
+                  <span className="font-black text-lg text-[#4285F4]">G</span>
+                  {authBusy ? '로그인 중...' : '학교 구글 계정으로 로그인'}
+                </button>
+                {emailError && (
+                  <p className="text-[11px] text-rose-500 font-bold text-center">{emailError}</p>
+                )}
+                <p className="text-[10px] text-slate-400 font-medium">000000@ggg.hs.kr 계정만 사용할 수 있어요</p>
+              </div>
+
+              {AuthAPI.mode === 'demo' && (
+                <div className="pt-3 border-t border-dashed border-slate-200 space-y-2 text-left">
+                  <p className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-2 py-1">
+                    미리보기 전용 · 실제 사이트에서는 구글 로그인만 사용돼요
+                  </p>
+                  <input
+                    type="email"
+                    inputMode="email"
+                    autoComplete="off"
+                    value={emailInput}
+                    onChange={(e) => { setEmailInput(e.target.value); setEmailError(''); }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleEmailSubmit()}
+                    placeholder="000000@ggg.hs.kr"
+                    className="w-full px-3.5 py-2 rounded-2xl border border-[#C8E6C9] bg-[#F3FAF6] text-center text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#2E7D32]"
+                  />
+                  <button
+                    onClick={handleEmailSubmit}
+                    className="w-full py-2 bg-[#2E7D32] hover:bg-[#1B4332] text-white font-bold rounded-2xl text-xs transition"
+                  >
+                    미리보기로 입장
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* CLIENT: LOADING (yellow pastel) */}
+        {activeRole === 'client' && clientAuthStage === 'loading' && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center text-center"
+            style={{
+              backgroundColor: '#FFF3C4',
+              backgroundImage: 'radial-gradient(rgba(255,255,255,0.8) 2px, transparent 2px)',
+              backgroundSize: '18px 18px'
+            }}
+          >
+            <p className="font-black text-5xl sm:text-7xl text-[#8A5A00] flex items-end justify-center">
+              로딩중
+              {[0, 1, 2].map((i) => (
+                <span key={i} className="animate-bounce" style={{ animationDelay: `${i * 0.15}s` }}>.</span>
+              ))}
+            </p>
+          </div>
+        )}
+
+        {/* CLIENT: BLOCKED NOTICE */}
+        {activeRole === 'client' && clientAuthStage === 'ready' && activeBlock && (
+          <div className="flex-1 flex items-center justify-center py-6">
+            <div className="w-full max-w-sm bg-white rounded-3xl p-6 border-2 border-rose-300 shadow-xl text-center space-y-3">
+              <div className="w-14 h-14 mx-auto bg-rose-50 text-rose-500 rounded-2xl flex items-center justify-center border border-rose-200">
+                <Icon name="Ban" className="w-7 h-7" />
+              </div>
+              <h2 className="font-black text-base text-rose-600">
+                {activeBlock.until === null ? '이용이 영구 정지된 계정입니다' : '이용이 일시 정지된 계정입니다'}
+              </h2>
+              <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                부적절한 언어 사용 및 신고로 인해 <strong className="text-slate-800">{clientEmail}</strong> 계정의 HYPer 상담소 이용이 제한되었습니다.
+              </p>
+              <p className="text-xs font-bold text-rose-600 bg-rose-50 rounded-2xl py-2 px-3 border border-rose-100">
+                {activeBlock.until === null
+                  ? '해제 예정 없음 (영구 차단)'
+                  : `해제 예정: ${new Date(activeBlock.until).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`}
+              </p>
+              <button
+                onClick={() => {
+                  AuthAPI.signOut();
+                  setClientEmail('');
+                  setEmailInput('');
+                  setClientAuthStage('gate');
+                }}
+                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition text-xs"
+              >
+                다른 계정으로 로그인
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* CLIENT SCREEN */}
+        {activeRole === 'client' && clientAuthStage === 'ready' && !activeBlock && (
+          <div className="flex-1 flex flex-col w-full max-w-5xl mx-auto py-1">
+            
+            {/* STEP 1: Counselor Cards */}
+            {clientStep === 1 && (
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-2 bg-white/90 backdrop-blur-sm p-3 rounded-2xl border border-[#C8E6C9] shadow-sm max-w-2xl mx-auto w-full">
+                  <h2 className="text-xs sm:text-sm font-bold text-[#1B4332] tracking-tight flex items-center justify-center gap-1">
+                    <span>☘︎</span>
+                    <span>비밀 익명 대나무숲</span>
+                    <span>☘︎</span>
+                  </h2>
+                  {clientMyChats.length > 0 && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar max-w-full">
+                      <span className="text-[10px] text-[#2E7D32] font-bold shrink-0">내 대화방:</span>
+                      {clientMyChats.map(ch => {
+                        const cObj = counselors.find(c => c.id === ch.counselorId);
+                        return (
+                          <button
+                            key={ch.id}
+                            onClick={() => {
+                              setSelectedCounselorId(ch.counselorId);
+                              setClientNick(ch.clientNick);
+                              setActiveChatId(ch.id);
+                              setClientStep(3);
+                            }}
+                            className="px-2.5 py-1 rounded-xl bg-[#E8F5E9] hover:bg-[#C8E6C9] text-[#1B4332] border border-[#C8E6C9] font-bold text-[11px] whitespace-nowrap flex items-center gap-1 shrink-0 shadow-xs"
+                          >
+                            <span>💬 {cObj?.codeName || '상담'}방</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {counselors.map((counselor) => {
+                    const statusInfo = getStatusBadgeInfo(counselor.status);
+                    const heartColor = getHeartColor(counselor.heartTemp);
+                    return (
+                      <div
+                        key={counselor.id}
+                        onClick={() => handleSelectCounselorClick(counselor.id)}
+                        className="group bg-white rounded-3xl p-3.5 sm:p-4 border border-[#C8E6C9] shadow-sm hover:shadow-md hover:border-[#F8BBD0] transition-all cursor-pointer flex flex-col justify-between"
+                      >
+                        <div className="space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center space-x-2.5 min-w-0">
+                              <div className="relative shrink-0 p-0.5">
+                                <div
+                                  className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white text-3xl sm:text-4xl flex items-center justify-center border border-[#C8E6C9] shadow-sm transition-colors"
+                                  style={counselor.customAvatar ? undefined : getAvatarBoxStyle(counselor.icon, 8)}
+                                >
+                                  {counselor.customAvatar ? (
+                                    <img src={counselor.customAvatar} alt="Profile" className="w-full h-full object-cover rounded-2xl" />
+                                  ) : (
+                                    counselor.icon
+                                  )}
+                                </div>
+                                <span className={`absolute top-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white ${statusInfo.dotColor}`} />
+                              </div>
+                              <div className="min-w-0">
+                                <h3 className="font-bold text-xs sm:text-sm text-[#1B4332] truncate">
+                                  {counselor.codeName}
+                                </h3>
+                                <span className="text-[10px] sm:text-[11px] font-extrabold text-[#D81B60] block truncate">
+                                  {counselor.styleBadge}
+                                </span>
+                              </div>
+                            </div>
+
+                            <span className="text-[11px] sm:text-xs font-extrabold px-2.5 py-1 rounded-full bg-[#FCE4EC] border border-[#F8BBD0] flex items-center gap-1 shrink-0 whitespace-nowrap" style={{ color: heartColor }}>
+                              <Heart className="w-3 h-3" style={{ fill: heartColor, color: heartColor }} />
+                              {counselor.heartTemp}℃
+                            </span>
+                          </div>
+
+                          <div className="bg-[#F3FAF6] p-2.5 sm:p-3 rounded-2xl border border-[#E8F5E9] space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${statusInfo.color}`}>
+                                {statusInfo.label}
+                              </span>
+                              <span className="text-[10px] font-bold text-slate-500 truncate">
+                                ⏱️ {counselor.statusText || '상시 대기'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-700 font-medium leading-relaxed pt-0.5 truncate">
+                              "{counselor.oneLiner}"
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-2.5 pt-2 border-t border-[#E8F5E9] flex items-center justify-between text-xs font-bold text-[#2E7D32] group-hover:text-[#D81B60]">
+                          <span>1:1 개별 상담 시작</span>
+                          <Icon name="ChevronRight" className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform shrink-0" />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* STEP 2: Category & Nickname */}
+            {clientStep === 2 && (
+              <div className="max-w-md mx-auto w-full bg-white rounded-3xl p-5 sm:p-6 shadow-xl border border-[#C8E6C9] space-y-3.5 my-auto">
+                <div className="flex items-center justify-between border-b border-[#F3FAF6] pb-2.5">
+                  <button
+                    onClick={() => setClientStep(1)}
+                    className="p-1.5 sm:p-2 rounded-2xl bg-[#E8F5E9] text-[#2E7D32] hover:bg-[#C8E6C9] transition flex items-center gap-1 text-xs font-bold shrink-0"
+                  >
+                    <Icon name="ChevronLeft" className="w-3.5 h-3.5" /> 뒤로가기
+                  </button>
+                  <span className="text-xs font-bold text-slate-400">상담 설정</span>
+                </div>
+
+                <div className="flex items-center space-x-3 p-2.5 bg-[#E8F5E9] rounded-2xl border border-[#C8E6C9]">
+                  <div className="relative shrink-0 p-0.5">
+                    <div
+                      className="w-10 h-10 rounded-2xl bg-white text-2xl flex items-center justify-center border border-[#C8E6C9] shadow-sm transition-colors"
+                      style={currentSelectedCounselor.customAvatar ? undefined : getAvatarBoxStyle(currentSelectedCounselor.icon, 7)}
+                    >
+                      {currentSelectedCounselor.customAvatar ? (
+                        <img src={currentSelectedCounselor.customAvatar} alt="Profile" className="w-full h-full object-cover rounded-2xl" />
+                      ) : (
+                        currentSelectedCounselor.icon
+                      )}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-[#2E7D32] font-bold">선택한 상담원</p>
+                    <h3 className="font-bold text-xs sm:text-sm text-[#1B4332] truncate">
+                      {currentSelectedCounselor.codeName} • {currentSelectedCounselor.styleBadge}
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 flex justify-between items-center">
+                    <span>나의 익명 닉네임</span>
+                    <button
+                      type="button"
+                      onClick={() => setClientNick(generateAnonNickname())}
+                      className="text-[#2E7D32] hover:text-[#1B4332] flex items-center gap-1 text-[11px] font-semibold shrink-0"
+                    >
+                      <Icon name="RefreshCw" className="w-3 h-3" /> 새로고침
+                    </button>
+                  </label>
+                  <input
+                    type="text"
+                    value={clientNick}
+                    onChange={(e) => setClientNick(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-2xl border border-[#C8E6C9] bg-[#F3FAF6] text-slate-800 text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#2E7D32]"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700">고민 카테고리</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {CATEGORIES.map((cat) => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setClientCategory(cat)}
+                        className={`p-2 rounded-2xl border text-left flex items-center gap-2 transition-all ${
+                          clientCategory.id === cat.id
+                            ? 'border-[#F8BBD0] bg-[#FCE4EC] text-[#D81B60] font-bold shadow-sm'
+                            : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="text-sm shrink-0">{cat.icon}</span>
+                        <span className="text-xs truncate">{cat.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-[#E8F5E9] rounded-2xl border border-[#C8E6C9] text-[11px] text-[#1B4332] flex items-center gap-2 font-semibold">
+                  <Icon name="ShieldCheck" className="w-4 h-4 flex-shrink-0 text-[#2E7D32]" />
+                  <span>첫 메시지를 전송해야 대화방이 개설됩니다 🌿</span>
+                </div>
+
+                <button
+                  onClick={handleStartChat}
+                  className="w-full py-2.5 bg-[#2E7D32] hover:bg-[#1B4332] text-white font-bold rounded-2xl shadow-md text-xs flex items-center justify-center gap-1.5 transition"
+                >
+                  <Icon name="MessageSquare" className="w-3.5 h-3.5" />
+                  대화방 준비하기
+                </button>
+              </div>
+            )}
+
+            {/* STEP 3: Chat Room */}
+            {clientStep === 3 && (
+              <div className="w-full max-w-4xl mx-auto h-[76vh] bg-white rounded-3xl shadow-xl border border-[#C8E6C9] flex flex-col overflow-hidden">
+                <div className="p-3 border-b border-[#C8E6C9] flex items-center justify-between gap-2 bg-[#E8F5E9]/90">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <button
+                      onClick={() => setClientStep(1)}
+                      className="p-1.5 rounded-2xl bg-white border border-[#C8E6C9] text-[#2E7D32] hover:bg-[#F3FAF6] transition shrink-0"
+                      title="목록으로"
+                    >
+                      <Icon name="ChevronLeft" className="w-4 h-4" />
+                    </button>
+
+                    <div className="relative shrink-0 p-0.5">
+                      <div
+                        className="w-9 h-9 rounded-2xl bg-white text-2xl flex items-center justify-center border border-[#C8E6C9] shadow-sm transition-colors"
+                        style={currentSelectedCounselor.customAvatar ? undefined : getAvatarBoxStyle(currentSelectedCounselor.icon, 6)}
+                      >
+                        {currentSelectedCounselor.customAvatar ? (
+                          <img src={currentSelectedCounselor.customAvatar} alt="Profile" className="w-full h-full object-cover rounded-2xl" />
+                        ) : (
+                          currentSelectedCounselor.icon
+                        )}
+                      </div>
+                      <span className={`absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white ${getStatusBadgeInfo(currentSelectedCounselor.status).dotColor}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-xs sm:text-sm text-[#1B4332] flex items-center gap-1.5 truncate">
+                        <span className="truncate">{currentSelectedCounselor.codeName}</span>
+                        <span className="text-[10px] font-bold shrink-0 flex items-center gap-0.5" style={{ color: getHeartColor(currentSelectedCounselor.heartTemp) }}>
+                          <Heart className="w-2.5 h-2.5" style={{ fill: getHeartColor(currentSelectedCounselor.heartTemp), color: getHeartColor(currentSelectedCounselor.heartTemp) }} />
+                          {currentSelectedCounselor.heartTemp}℃
+                        </span>
+                      </h3>
+                      <p className="text-[10px] text-[#2E7D32] truncate">
+                        {clientNick}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleClientClickFinish}
+                    className="text-xs px-2.5 py-1.5 rounded-2xl bg-[#FCE4EC] border border-[#F8BBD0] text-[#D81B60] hover:bg-[#F8BBD0] transition font-bold shadow-sm flex items-center gap-1 shrink-0 whitespace-nowrap"
+                  >
+                    <Heart className="w-3 h-3 fill-current" /> <span>상담 완료</span>
+                  </button>
+                </div>
+
+                <div className="flex-1 p-3.5 overflow-y-auto space-y-3">
+                  {!clientActiveChat ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center space-y-2.5 p-4 text-slate-500">
+                      <div className="w-14 h-14 bg-[#E8F5E9] text-[#2E7D32] rounded-3xl flex items-center justify-center text-xl border border-[#C8E6C9]">
+                        ✉️
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-xs text-[#1B4332]">첫 메시지를 입력해 주세요</h4>
+                        <p className="text-[11px] text-slate-500 mt-1 max-w-xs">
+                          메시지를 보내는 순간 <strong>[{currentSelectedCounselor.codeName}]</strong> 부원에게 알림이 전송됩니다.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    clientActiveChat.messages.map((msg) => {
+                      if (msg.sender === 'system') {
+                        return (
+                          <div key={msg.id} className="flex justify-center my-1.5">
+                            <div className="bg-[#E8F5E9] text-[#1B4332] text-[11px] px-3.5 py-1 rounded-full text-center border border-[#C8E6C9] font-medium">
+                              {msg.text}
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      const isClient = msg.sender === 'client';
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`flex flex-col ${isClient ? 'items-end' : 'items-start'}`}
+                        >
+                          <span className="text-[10px] font-bold text-slate-400 mb-0.5 px-1">
+                            {isClient ? `나(${clientNick})` : currentSelectedCounselor.codeName}
+                          </span>
+                          <div
+                            className={`max-w-[78%] rounded-2xl px-3 py-2 text-xs sm:text-sm leading-relaxed shadow-sm font-medium ${
+                              isClient
+                                ? 'bg-[#2E7D32] text-white rounded-tr-none'
+                                : 'bg-[#F3FAF6] text-slate-800 rounded-tl-none border border-[#E8F5E9]'
+                            }`}
+                          >
+                            {msg.text}
+                          </div>
+                          <span className="text-[9px] text-slate-400 mt-0.5 px-1">{msg.time}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+
+                <div className="px-3 py-1.5 bg-[#F3FAF6] border-t border-[#E8F5E9] flex gap-1.5 overflow-x-auto no-scrollbar items-center">
+                  <span className="text-[10px] text-slate-400 font-bold shrink-0">추천:</span>
+                  {[
+                    "들어줘서 고마워!",
+                    "어디서부터 말해야 할지 모르겠어",
+                    "어떻게 하는 게 좋을까?",
+                    "마음이 한결 편해졌어!"
+                  ].map((sug, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleFillQuickInput(sug, 'client')}
+                      className="whitespace-nowrap text-[11px] bg-white border border-[#C8E6C9] text-[#1B4332] px-2.5 py-1 rounded-full hover:bg-[#E8F5E9] transition font-medium shrink-0"
+                    >
+                      + {sug}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="p-2.5 bg-white border-t border-[#C8E6C9] flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={clientMessageInput}
+                    onChange={(e) => setClientMessageInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendClientMessage()}
+                    placeholder="메시지 입력..."
+                    className="flex-1 bg-[#F3FAF6] text-slate-800 px-3.5 py-2 rounded-2xl border border-[#C8E6C9] text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#2E7D32]"
+                  />
+                  <button
+                    onClick={handleSendClientMessage}
+                    className="p-2 bg-[#2E7D32] hover:bg-[#1B4332] text-white rounded-2xl shadow-md transition flex items-center justify-center shrink-0"
+                  >
+                    <Icon name="Send" className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* COUNSELOR DASHBOARD */}
+        {activeRole === 'counselor' && (
+          <div className="flex-1 flex flex-col w-full py-1">
+            {!loggedInCounselor ? (
+              <div className="max-w-md mx-auto w-full my-auto space-y-3.5 py-4">
+                <div className="bg-white/90 p-4 rounded-3xl border border-[#C8E6C9] shadow-sm space-y-2.5">
+                  <button
+                    onClick={() => setActiveRole('client')}
+                    className="flex items-center gap-1 text-xs px-2 py-1.5 bg-[#E8F5E9] text-[#2E7D32] font-bold rounded-xl hover:bg-[#C8E6C9] transition"
+                  >
+                    <Icon name="ChevronLeft" className="w-3.5 h-3.5" /> 뒤로가기
+                  </button>
+                  <div className="text-center space-y-1">
+                    <div className="w-11 h-11 bg-[#FCE4EC] text-[#D81B60] rounded-2xl flex items-center justify-center mx-auto text-xl shadow-sm border border-[#F8BBD0]">
+                      🔒
+                    </div>
+                    <h2 className="text-sm sm:text-base font-extrabold text-[#1B4332]">부원 전용 로그인</h2>
+                    <p className="text-[11px] text-slate-600">
+                      {AuthAPI.mode === 'firebase'
+                        ? '부원으로 등록된 학교 구글 계정으로 로그인하세요.'
+                        : '본인 프로필 선택 후 PIN 번호를 입력하세요.'}
+                    </p>
+                  </div>
+                </div>
+
+                {AuthAPI.mode === 'firebase' ? (
+                  <div className="bg-white rounded-3xl p-5 border border-[#C8E6C9] shadow-lg space-y-3 text-center">
+                    <button
+                      onClick={handleCounselorGoogleLogin}
+                      disabled={authBusy}
+                      className="w-full py-3 bg-white hover:bg-[#F3FAF6] border border-slate-300 text-slate-700 font-bold rounded-2xl shadow-sm text-sm flex items-center justify-center gap-2 transition disabled:opacity-60"
+                    >
+                      <span className="font-black text-lg text-[#4285F4]">G</span>
+                      {authBusy ? '로그인 중...' : '구글로 부원 로그인'}
+                    </button>
+                    {counselorAuthError && (
+                      <p className="text-[11px] text-rose-500 font-bold">{counselorAuthError}</p>
+                    )}
+                  </div>
+                ) : !selectedProfileForLogin ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {counselors.map((c) => {
+                      const statusInfo = getStatusBadgeInfo(c.status);
+                      return (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            setSelectedProfileForLogin(c);
+                            setPinError(false);
+                          }}
+                          className="p-2.5 rounded-3xl bg-white border border-[#C8E6C9] hover:border-[#F8BBD0] text-center space-y-1 transition shadow-sm group relative"
+                        >
+                          <div className="relative inline-block mb-0.5 p-0.5">
+                            <div
+                              className="w-9 h-9 rounded-2xl bg-white text-xl flex items-center justify-center mx-auto border border-[#C8E6C9] transition-colors"
+                              style={c.customAvatar ? undefined : getAvatarBoxStyle(c.icon, 6)}
+                            >
+                              {c.customAvatar ? (
+                                <img src={c.customAvatar} alt="Profile" className="w-full h-full object-cover rounded-2xl" />
+                              ) : (
+                                c.icon
+                              )}
+                            </div>
+                            <span className={`absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white ${statusInfo.dotColor}`} />
+                          </div>
+                          <h4 className="font-bold text-xs text-slate-800 group-hover:text-[#D81B60] truncate">
+                            {c.codeName}
+                          </h4>
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full inline-block ${statusInfo.color}`}>
+                            {statusInfo.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <form onSubmit={handleMemberPinSubmit} className="bg-white rounded-3xl p-5 border border-[#C8E6C9] shadow-lg space-y-3.5">
+                    <div className="flex items-center justify-between border-b border-[#F3FAF6] pb-2.5">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedProfileForLogin(null)}
+                          className="p-1.5 rounded-xl bg-[#E8F5E9] text-[#2E7D32]"
+                        >
+                          <Icon name="ChevronLeft" className="w-4 h-4" />
+                        </button>
+                        <div>
+                          <h3 className="font-bold text-xs sm:text-sm text-[#1B4332]">
+                            {selectedProfileForLogin.codeName} 로그인
+                          </h3>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                        <Icon name="Lock" className="w-3.5 h-3.5 text-[#2E7D32]" /> 비밀번호 PIN (기본: 1234)
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={4}
+                        value={pinInput}
+                        onChange={(e) => setPinInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                        placeholder="PIN 입력"
+                        autoFocus
+                        className="w-full px-3.5 py-2 rounded-2xl border border-[#C8E6C9] bg-[#F3FAF6] text-center text-sm tracking-widest focus:outline-none focus:ring-2 focus:ring-[#2E7D32]"
+                      />
+                      {pinError && (
+                        <p className="text-[11px] text-rose-500 font-bold text-center mt-1">
+                          비밀번호가 일치하지 않습니다.
+                        </p>
+                      )}
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-[#2E7D32] hover:bg-[#1B4332] text-white font-bold text-xs rounded-2xl shadow-md transition"
+                    >
+                      로그인하기
+                    </button>
+                  </form>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col h-[78vh] space-y-2">
+                <div className="bg-white p-2 rounded-3xl border border-[#C8E6C9] shadow-sm flex items-center justify-between shrink-0">
+                  <div className="flex items-center space-x-1.5 px-1 min-w-0">
+                    <button
+                      onClick={() => setActiveRole('client')}
+                      className="shrink-0 p-1.5 rounded-xl bg-[#F3FAF6] border border-[#C8E6C9] text-[#2E7D32] hover:bg-[#E8F5E9] transition"
+                      title="내담자 화면으로 (로그아웃되지 않아요)"
+                    >
+                      <Icon name="ChevronLeft" className="w-3.5 h-3.5" />
+                    </button>
+                    <div className="relative shrink-0 p-0.5">
+                      <div
+                        className="w-7 h-7 rounded-xl bg-white text-lg flex items-center justify-center border border-[#C8E6C9] transition-colors"
+                        style={loggedInCounselor.customAvatar ? undefined : getAvatarBoxStyle(loggedInCounselor.icon, 5)}
+                      >
+                        {loggedInCounselor.customAvatar ? (
+                          <img src={loggedInCounselor.customAvatar} alt="Profile" className="w-full h-full object-cover rounded-xl" />
+                        ) : (
+                          loggedInCounselor.icon
+                        )}
+                      </div>
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-xs text-[#1B4332] truncate">
+                        {loggedInCounselor.codeName} 부원님 접속중 🌿
+                      </h3>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <div className="bg-[#F3FAF6] p-1 rounded-2xl border border-[#C8E6C9] flex items-center text-xs">
+                      <button
+                        onClick={() => setCounselorViewMode('chat')}
+                        className={`px-2.5 py-1 rounded-xl transition-all flex items-center gap-1 font-bold text-[11px] ${
+                          counselorViewMode === 'chat'
+                            ? 'bg-[#2E7D32] text-white shadow-sm'
+                            : 'text-[#2E7D32] hover:bg-emerald-100/50'
+                        }`}
+                      >
+                        <Icon name="MessageSquare" className="w-3 h-3" /> 상담방 ({myCounselorChats.length})
+                      </button>
+                      <button
+                        onClick={() => setCounselorViewMode('archive')}
+                        className={`px-2.5 py-1 rounded-xl transition-all flex items-center gap-1 font-bold text-[11px] ${
+                          counselorViewMode === 'archive'
+                            ? 'bg-[#D81B60] text-white shadow-sm'
+                            : 'text-[#D81B60] hover:bg-pink-100/50'
+                        }`}
+                      >
+                        <Icon name="BookOpen" className="w-3 h-3" /> 아카이브 ({loggedInCounselor.archiveMessages?.length || 0})
+                      </button>
+                      {canManageRoster && (
+                        <button
+                          onClick={() => setCounselorViewMode('admin')}
+                          className={`px-2.5 py-1 rounded-xl transition-all flex items-center gap-1 font-bold text-[11px] ${
+                            counselorViewMode === 'admin'
+                              ? 'bg-slate-700 text-white shadow-sm'
+                              : 'text-slate-600 hover:bg-slate-200/60'
+                          }`}
+                        >
+                          관리
+                        </button>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={openSettingsModal}
+                      className="p-1.5 text-[#1B4332] hover:bg-[#E8F5E9] rounded-xl transition"
+                      title="설정"
+                    >
+                      <Icon name="Settings" className="w-3.5 h-3.5" />
+                    </button>
+
+                    <button
+                      onClick={handleLogoutCounselor}
+                      className="p-1.5 text-slate-400 hover:text-rose-500 rounded-xl hover:bg-rose-50 transition"
+                      title="로그아웃"
+                    >
+                      <Icon name="LogOut" className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* ARCHIVE VIEW: UNIFIED COLOR (No Gradients) */}
+                {counselorViewMode === 'admin' && canManageRoster ? (
+                  <div className="flex-1 bg-white rounded-3xl border border-[#C8E6C9] shadow-xl p-4 sm:p-5 overflow-y-auto space-y-4">
+                    <div className="space-y-1">
+                      <h3 className="font-bold text-sm sm:text-base text-[#1B4332]">부원 계정 관리 · 인수인계</h3>
+                      <p className="text-[11px] text-slate-600 font-medium leading-relaxed">
+                        <strong className="text-[#1B4332] font-extrabold bg-[#E8F5E9] px-1 rounded">졸업하는 부원은 삭제</strong>하고,{' '}
+                        <strong className="text-[#1B4332] font-extrabold bg-[#E8F5E9] px-1 rounded">후배의 학교 이메일을 프로필 칸에 등록</strong>하면 다음 기수로 권한이 넘어가요.
+                      </p>
+                    </div>
+
+                    <div className="bg-[#F3FAF6] border border-[#C8E6C9] rounded-2xl p-3 space-y-2">
+                      <p className="text-xs font-bold text-[#1B4332]">부원 등록 / 변경</p>
+                      <input
+                        type="email"
+                        value={adminEmailInput}
+                        onChange={(e) => { setAdminEmailInput(e.target.value); setAdminMsg(''); }}
+                        placeholder="학교 이메일 (예: 123456@ggg.hs.kr)"
+                        className="w-full px-3 py-2 rounded-xl border border-[#C8E6C9] bg-white text-xs focus:outline-none focus:ring-2 focus:ring-[#2E7D32]"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <select
+                          value={adminProfileId}
+                          onChange={(e) => setAdminProfileId(e.target.value)}
+                          className="px-2 py-2 rounded-xl border border-[#C8E6C9] bg-white text-xs"
+                        >
+                          {counselors.map((c) => (
+                            <option key={c.id} value={c.id}>{c.icon} {c.codeName}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={adminRoleInput}
+                          onChange={(e) => setAdminRoleInput(e.target.value)}
+                          className="px-2 py-2 rounded-xl border border-[#C8E6C9] bg-white text-xs"
+                        >
+                          <option value="member">부원</option>
+                          <option value="admin">관리자</option>
+                        </select>
+                      </div>
+                      <button
+                        onClick={handleAdminAdd}
+                        className="w-full py-2 bg-[#2E7D32] hover:bg-[#1B4332] text-white font-bold rounded-xl text-xs transition"
+                      >
+                        등록
+                      </button>
+                      {adminMsg && <p className="text-[11px] font-bold text-[#2E7D32] text-center">{adminMsg}</p>}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-bold text-[#1B4332]">등록된 계정 ({adminList.length})</p>
+                      {adminList.length === 0 ? (
+                        <p className="text-[11px] text-slate-400 text-center py-3">등록된 계정이 없어요.</p>
+                      ) : (
+                        adminList.map((r) => {
+                          const prof = counselors.find((c) => c.id === r.counselorId);
+                          return (
+                            <div key={r.email} className="flex items-center justify-between gap-2 p-2.5 rounded-2xl border border-[#E8F5E9] bg-white">
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold text-slate-800 truncate">{r.email}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  {prof ? `${prof.icon} ${prof.codeName}` : r.counselorId} · {r.role === 'admin' ? '관리자' : '부원'}
+                                </p>
+                              </div>
+                              <button
+                                onClick={() => handleAdminRemove(r.email)}
+                                className="shrink-0 text-[11px] px-2.5 py-1 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 font-bold hover:bg-rose-100 transition"
+                              >
+                                삭제
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-bold text-[#1B4332]">프로필 초기화 (인수인계용)</p>
+                      <p className="text-[10px] text-slate-500">전 기수의 마음 온도와 감사 편지를 비우고 새로 시작해요.</p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {counselors.map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => handleResetProfile(c.id)}
+                            className={`py-1.5 px-2 rounded-xl border text-[11px] font-bold transition ${
+                              resetConfirmId === c.id
+                                ? 'bg-rose-600 text-white border-rose-600'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {resetConfirmId === c.id ? '정말 초기화?' : `${c.icon} ${c.codeName}`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : counselorViewMode === 'archive' ? (
+                  <div className="flex-1 bg-white rounded-3xl border border-[#F8BBD0] shadow-xl p-4 sm:p-5 overflow-y-auto flex flex-col space-y-4">
+                    <div className="bg-white p-4 sm:p-5 rounded-3xl border border-[#F8BBD0] flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+                      <div className="space-y-1 text-center sm:text-left">
+                        <div className="inline-flex items-center gap-1 px-3 py-0.5 rounded-full bg-[#FFF0F5] text-[#D81B60] font-bold text-[11px] border border-[#F8BBD0]">
+                          <Icon name="Award" className="w-3.5 h-3.5 text-[#D81B60]" />
+                          <span>{loggedInCounselor.codeName} 부원의 감사 아카이브</span>
+                        </div>
+                        <h3 className="font-bold text-sm sm:text-base text-[#1B4332]">
+                          내담자들이 남겨준 따뜻한 응원 편지들 💌
+                        </h3>
+                      </div>
+
+                      <div className="bg-white px-4 py-3 rounded-2xl border border-[#F8BBD0] text-center shadow-xs shrink-0 flex flex-col items-center gap-0.5">
+                        <span className="text-[10px] text-slate-500 font-bold block">누적 마음 온도</span>
+                        <span className="text-xl font-black flex items-center gap-1" style={{ color: getHeartColor(loggedInCounselor.heartTemp) }}>
+                          <Heart className="w-4 h-4" style={{ fill: getHeartColor(loggedInCounselor.heartTemp), color: getHeartColor(loggedInCounselor.heartTemp) }} />
+                          +{loggedInCounselor.heartTemp}℃
+                        </span>
+                      </div>
+                    </div>
+
+                    {(!loggedInCounselor.archiveMessages || loggedInCounselor.archiveMessages.length === 0) ? (
+                      <div className="flex-1 flex flex-col items-center justify-center py-12 text-center space-y-2 bg-white rounded-3xl border border-dashed border-[#F8BBD0]">
+                        <div className="w-12 h-12 bg-white text-[#D81B60] rounded-2xl flex items-center justify-center text-xl border border-[#F8BBD0]">
+                          🌿
+                        </div>
+                        <h4 className="font-bold text-xs text-[#1B4332]">아직 도착한 감사 편지가 없어요</h4>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {loggedInCounselor.archiveMessages.map((arch) => (
+                          <div 
+                            key={arch.id}
+                            className="bg-white rounded-3xl p-4 border border-[#F8BBD0] shadow-sm flex flex-col justify-between space-y-3 relative group"
+                          >
+                            <div className="space-y-2.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-[#1B4332] bg-white px-2.5 py-0.5 rounded-xl border border-[#C8E6C9] flex items-center gap-1">
+                                  <span>👤</span> {arch.clientNick}
+                                </span>
+                                <span className="text-[11px] font-bold text-[#D81B60] bg-white px-2.5 py-0.5 rounded-xl border border-[#F8BBD0] flex items-center gap-1">
+                                  <Icon name="Sparkles" className="w-3 h-3" /> +{arch.temp}℃
+                                </span>
+                              </div>
+
+                              <div className="bg-white p-3 rounded-2xl border border-[#F8BBD0]/60">
+                                <p className="text-xs text-slate-700 font-medium leading-relaxed whitespace-pre-wrap">
+                                  "{arch.text}"
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="text-[10px] text-slate-400 pt-2 border-t border-[#F8BBD0]/40 flex justify-between items-center">
+                              <span>작성일시</span>
+                              <span className="font-semibold text-slate-500">{arch.time}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* CHAT VIEW */
+                  <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-3 h-full overflow-hidden">
+                    <div className={`bg-white rounded-3xl border border-[#C8E6C9] shadow-md flex flex-col overflow-hidden h-full ${
+                      counselorMobileTab === 'chat' ? 'hidden md:flex' : 'flex'
+                    }`}>
+                      <div className="px-3.5 py-2 bg-[#E8F5E9]/90 border-b border-[#C8E6C9] text-xs font-bold text-[#2E7D32] flex justify-between items-center shrink-0">
+                        <span>상담방 목록</span>
+                        <span className="text-[10px] text-slate-500 truncate max-w-[120px]">
+                          {loggedInCounselor.statusText || '상시 대기'}
+                        </span>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto divide-y divide-[#E8F5E9]">
+                        {myCounselorChats.length === 0 ? (
+                          <div className="p-4 text-center text-slate-400 text-xs">
+                            신청된 상담방이 없습니다.
+                          </div>
+                        ) : (
+                          myCounselorChats.map((chat) => {
+                            const isActive = chat.id === activeChatId;
+                            const lastMsg = chat.messages[chat.messages.length - 1];
+                            return (
+                              <div
+                                key={chat.id}
+                                onClick={() => {
+                                  setActiveChatId(chat.id);
+                                  setCounselorMobileTab('chat');
+                                }}
+                                className={`p-3 cursor-pointer transition-all relative group ${
+                                  isActive
+                                    ? 'bg-[#E8F5E9] border-l-4 border-[#2E7D32]'
+                                    : 'hover:bg-[#F3FAF6]'
+                                }`}
+                              >
+                                <div className="flex justify-between items-center mb-1 pr-14">
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white text-[#1B4332] border border-[#C8E6C9] shrink-0">
+                                    {chat.category.label}
+                                  </span>
+                                  <span className="text-[9px] text-slate-400">
+                                    {typeof chat.createdAt === 'number'
+                                      ? new Date(chat.createdAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                      : chat.createdAt}
+                                  </span>
+                                </div>
+
+                                <h4 className="font-bold text-xs text-slate-800 my-0.5 truncate pr-14">
+                                  💬 {chat.clientNick}
+                                </h4>
+
+                                <p className="text-[11px] text-slate-500 line-clamp-1 font-medium">
+            <span className="flex items-center gap-1 font-bold text-[#1B4332]">
+              <Icon name="PhoneCall" className="w-3 h-3 text-[#2E7D32]" /> 긴급:
+            </span>
+            <span>청소년전화 1388</span>
+            <span>·</span>
+            <span>자살예방 1393</span>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+ 
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
